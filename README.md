@@ -1,8 +1,8 @@
 ## 使い方
 
-1. [.NET 8.0 Runtime](https://dotnet.microsoft.com/ja-jp/download/dotnet/8.0/runtime)をインストールします。
+1. [.NET 8.0 SDK](https://dotnet.microsoft.com/ja-jp/download/dotnet/8.0)をインストールします。
 
-    開発は.NET 8.0を使っています。
+    .NET 9.0 SDKでも良いかも。開発は.NET 8.0を使っています。
 
 2. ソースコードをローカルにクローンします。
 
