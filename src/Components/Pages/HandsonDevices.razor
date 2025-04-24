@@ -1,0 +1,231 @@
+﻿@page "/handson/devices"
+@rendermode InteractiveServer
+@inject IConfiguration Configuration
+
+<PageTitle>handson/devices</PageTitle>
+
+<MudButton Variant="Variant.Filled" Color="Color.Primary" OnClick="RefreshClick">Refresh</MudButton>
+
+<MudTable Items="@Devices">
+    <HeaderContent>
+        <MudTh>Device Id</MudTh>
+        <MudTh>Device Name</MudTh>
+        <MudTh>Connection State</MudTh>
+        <MudTh>Last Activity Time</MudTh>
+        <MudTh>NTP</MudTh>
+        <MudTh>Sensor Loader Version</MudTh>
+        <MudTh>Sensor Fw Version</MudTh>
+        <MudTh>Ap Fw Version</MudTh>
+        <MudTh>Models</MudTh>
+        <MudTh>Apps</MudTh>
+        <MudTh>Command Parameter File</MudTh>
+    </HeaderContent>
+    <RowTemplate>
+        <MudTd>@context.DeviceId</MudTd>
+        <MudTd>@context.DeviceName</MudTd>
+        <MudTd>@context.ConnectionState</MudTd>
+        <MudTd>@context.LastActivityTime</MudTd>
+        <MudTd>@context.Ntp</MudTd>
+        <MudTd>@context.SensorLoaderVersion</MudTd>
+        <MudTd>@context.SensorFwVersion</MudTd>
+        <MudTd>@context.ApFwVersion</MudTd>
+        <MudTd>@(context.Models.Count >= 1 ? context.Models[0] : "")</MudTd>
+        <MudTd>@(context.Apps.Count >= 1 ? context.Apps[0] : "")</MudTd>
+        <MudTd>@(CommandParameterFiles?.FirstOrDefault(v => v.DeviceIds.Contains(context.DeviceId))?.FileName ?? "")</MudTd>
+    </RowTemplate>
+</MudTable>
+
+@code {
+    private class DeviceInformation
+    {
+        public string? DeviceId;            // required
+        public string? DeviceName;          // required
+        public string? ConnectionState;     // required
+        public string? LastActivityTime;    // required
+        public List<string?> Models;
+        public string? SensorLoaderVersion;
+        public string? SensorFwVersion;
+        public string? ApFwVersion;
+        public string? Ntp;
+        public List<string?> Apps;
+
+        public DeviceInformation()
+        {
+            Models = new();
+            Apps = new();
+        }
+    };
+
+    private class CommandParameterFile
+    {
+        public string? FileName;            // required
+        public List<string?> DeviceIds;
+
+        public CommandParameterFile()
+        {
+            DeviceIds = new();
+        }
+    };
+
+    private List<CommandParameterFile>? CommandParameterFiles;
+    private List<DeviceInformation>? Devices;
+
+    private HttpClient client = new HttpClient();
+
+    private async Task RefreshClick()
+    {
+        var clientId = Configuration["ClientId"];
+        var clientSecret = Configuration["ClientSecret"];
+        var portalAuthorizationEndpoint = Configuration["PortalAuthorizationEndpoint"];
+        var consoleEndpoint = Configuration["ConsoleEndpoint"];
+        var groupId = Configuration["GroupId"];
+
+        var accessToken = await GenerateAccessToken();
+
+        using var commandParameterFiles = await GetCommandParameterFiles(accessToken);
+
+        CommandParameterFiles = new();
+        foreach (var commandParameterElement in commandParameterFiles.RootElement.GetProperty("parameter_list").EnumerateArray())
+        {
+            CommandParameterFile commandParameterFile = new();
+
+            commandParameterFile.FileName = commandParameterElement.GetProperty("file_name").GetString();
+
+            JsonElement deviceIdsElement;
+            if (commandParameterElement.TryGetProperty("device_ids", out deviceIdsElement))
+            {
+                foreach (var deviceIdElement in deviceIdsElement.EnumerateArray())
+                {
+                    commandParameterFile.DeviceIds.Add(deviceIdElement.GetString());
+                }
+            }
+
+            CommandParameterFiles.Add(commandParameterFile);
+        }
+
+        using var devices = await GetDevices(accessToken, groupId);
+
+        Devices = new();
+        foreach (var deviceSummary in devices.RootElement.GetProperty("devices").EnumerateArray())
+        {
+            var deviceId = deviceSummary.GetProperty("device_id").GetString();
+
+            using var deviceDetail = await GetDevice(accessToken, deviceId!);
+            var deviceDetailElement = deviceDetail.RootElement;
+
+            DeviceInformation deviceInformation = new();
+
+            deviceInformation.DeviceId = deviceDetailElement.GetProperty("device_id").GetString();
+            deviceInformation.DeviceName = deviceDetailElement.GetProperty("property").GetProperty("device_name").GetString();
+            deviceInformation.ConnectionState = deviceDetailElement.GetProperty("connectionState").GetString();
+            deviceInformation.LastActivityTime = deviceDetailElement.GetProperty("lastActivityTime").GetString();
+
+            foreach (var modelElement in deviceDetailElement.GetProperty("models").EnumerateArray())
+            {
+                deviceInformation.Models.Add(modelElement.GetProperty("model_version_id").GetString());
+            }
+
+            JsonElement versionElement;
+            if (deviceDetailElement.GetProperty("state").TryGetProperty("Version", out versionElement))
+            {
+                deviceInformation.SensorLoaderVersion = versionElement.GetProperty("SensorLoaderVersion").GetString();
+                deviceInformation.SensorFwVersion = versionElement.GetProperty("SensorFwVersion").GetString();
+                deviceInformation.ApFwVersion = versionElement.GetProperty("ApFwVersion").GetString();
+            }
+
+            JsonElement networkElement;
+            if (deviceDetailElement.GetProperty("state").TryGetProperty("Network", out networkElement))
+            {
+                deviceInformation.Ntp = networkElement.GetProperty("NTP").GetString();
+            }
+
+            JsonElement appsElement;
+            if (deviceDetailElement.TryGetProperty("apps", out appsElement))
+            {
+                foreach (var modelElement in deviceDetailElement.GetProperty("apps").EnumerateArray())
+                {
+                    var name = modelElement.GetProperty("name").GetString();
+                    var version = modelElement.GetProperty("version").GetString();
+
+                    deviceInformation.Apps.Add($"{name}:{version}");
+                }
+            }
+
+            Devices.Add(deviceInformation);
+        }
+    }
+
+    private async Task<string> GenerateAccessToken()
+    {
+        using (var request = new HttpRequestMessage(HttpMethod.Post, Configuration["PortalAuthorizationEndpoint"]))
+        {
+            request.Headers.Add("Accept", "application/json");
+            request.Headers.Add("Authorization", $"Basic {Convert.ToBase64String(Encoding.UTF8.GetBytes($"{Configuration["ClientId"]}:{Configuration["ClientSecret"]}"))}");
+            request.Headers.Add("Cache-Control", "no-cache");
+
+            request.Content = new StringContent("grant_type=client_credentials&scope=system", Encoding.UTF8, "application/x-www-form-urlencoded");
+
+            using (var response = await client.SendAsync(request))
+            {
+                string responseString = await response.Content.ReadAsStringAsync();
+
+                var responseJsonDocument = JsonDocument.Parse(responseString);
+                string? accessToken = responseJsonDocument.RootElement.GetProperty("access_token").GetString();
+
+                return accessToken!;
+            }
+        }
+    }
+
+    private async Task<JsonDocument> GetDevices(string accessToken, string groupId)
+    {
+        using (var request = new HttpRequestMessage(HttpMethod.Get, $"{Configuration["ConsoleEndpoint"]}/devices?device_group_id={groupId}&scope=minimal"))
+        {
+            request.Headers.Add("Authorization", $"Bearer {accessToken}");
+
+            using (var response = await client.SendAsync(request))
+            {
+                string responseString = await response.Content.ReadAsStringAsync();
+
+                var responseJsonDocument = JsonDocument.Parse(responseString);
+
+                return responseJsonDocument;
+            }
+        }
+    }
+
+    private async Task<JsonDocument> GetDevice(string accessToken, string deviceId)
+    {
+        using (var request = new HttpRequestMessage(HttpMethod.Get, $"{Configuration["ConsoleEndpoint"]}/devices/{deviceId}"))
+        {
+            request.Headers.Add("Authorization", $"Bearer {accessToken}");
+
+            using (var response = await client.SendAsync(request))
+            {
+                string responseString = await response.Content.ReadAsStringAsync();
+
+                var responseJsonDocument = JsonDocument.Parse(responseString);
+
+                return responseJsonDocument;
+            }
+        }
+    }
+
+    private async Task<JsonDocument> GetCommandParameterFiles(string accessToken)
+    {
+        using (var request = new HttpRequestMessage(HttpMethod.Get, $"{Configuration["ConsoleEndpoint"]}/command_parameter_files"))
+        {
+            request.Headers.Add("Authorization", $"Bearer {accessToken}");
+
+            using (var response = await client.SendAsync(request))
+            {
+                string responseString = await response.Content.ReadAsStringAsync();
+
+                var responseJsonDocument = JsonDocument.Parse(responseString);
+
+                return responseJsonDocument;
+            }
+        }
+    }
+
+}
